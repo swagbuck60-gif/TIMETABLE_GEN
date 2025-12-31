@@ -6,247 +6,213 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from datetime import datetime
 
-st.set_page_config(
-    page_title="🎓 School Timetable Generator", 
-    page_icon="📚", 
-    layout="wide"
-)
+st.set_page_config(page_title="🎓 Timetable Generator", page_icon="📚", layout="wide")
+
+def normalize_class_name(class_name):
+    """VI A → VIA, IX B → IXB, XII A → XIIA"""
+    if pd.isna(class_name):
+        return None
+    # Remove spaces and normalize
+    clean = str(class_name).strip().upper().replace(' ', '')
+    return clean if len(clean) > 2 else None
 
 @st.cache_data
 def process_file(uploaded_file):
-    """Process uploaded Excel file"""
     df = pd.read_excel(uploaded_file, sheet_name='SCHOOL TIMETABLE')
     
-    # Find data start (skip headers)
     data_start = 0
     for i, row in df.iterrows():
-        if pd.notna(row.iloc[1]) and str(row.iloc[1]).strip() and len(str(row.iloc[1])) > 2:
+        if pd.notna(row.iloc[1]) and len(str(row.iloc[1]).strip()) > 3:
             data_start = i
             break
     
     df_clean = df.iloc[data_start:].reset_index(drop=True)
-    
     teachers = []
-    classes = set()
+    classes_normalized = set()
     has_subject = len(df_clean.columns) > 3
     
     for idx, row in df_clean.iterrows():
         name = str(row.iloc[1]).strip()
-        if not name or len(name) < 2: 
-            continue
+        if len(name) < 3: continue
         
-        teacher_data = {
+        # EXACT 48 periods (columns 4-51)
+        periods_raw = pd.Series(row.iloc[4:52]).dropna().tolist()
+        
+        subject = str(row.iloc[3]).strip() if has_subject and pd.notna(row.iloc[3]) else name[:4]
+        
+        teacher = {
             'name': name,
-            'designation': str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) else '',
-            'subject': str(row.iloc[3]).strip() if has_subject and pd.notna(row.iloc[3]) else 'Subject',
-            'periods': [str(x).strip() for x in row.iloc[4:-1] if pd.notna(x)]
+            'subject': subject,
+            'periods_raw': periods_raw,  # Keep raw for mapping
+            'periods_normalized': []     # Normalized classes
         }
         
-        # Extract classes from periods
-        for period in teacher_data['periods']:
-            if len(period) > 2 and period.isupper() and period.replace(' ', '').isalpha():
-                classes.add(period)
+        # Normalize ALL classes for this teacher
+        normalized_periods = []
+        for period_raw in periods_raw:
+            normalized_class = normalize_class_name(period_raw)
+            if normalized_class:
+                classes_normalized.add(normalized_class)
+                normalized_periods.append(normalized_class)
+            else:
+                normalized_periods.append('')
         
-        teachers.append(teacher_data)
+        teacher['periods_normalized'] = normalized_periods
+        teachers.append(teacher)
     
-    return teachers, sorted(list(classes))
+    return teachers, sorted(list(classes_normalized))
 
-def create_professional_timetable(teachers, classes, school_name):
-    """Create full professional Excel workbook"""
+def create_perfect_timetable(teachers, classes, school_name):
     wb = Workbook()
     wb.remove(wb.active)
     
     COLORS = {
-        'school': '2E8B57', 'class_name': '32CD32', 'teacher': 'FFD700',
-        'day': '1E90FF', 'period': '4169E1', 'data_cell': 'E0F2F1'
+        'school': '2E8B57', 'header': '32CD32', 'teacher': 'FFD700',
+        'day': '1E90FF', 'period': '4169E1', 'class_cell': 'E0F2F1', 'subject_cell': 'FFF2CC'
     }
     
     DAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT']
     PERIODS = ['1', '2', '3', '4', '5', '6', '7', '8']
     
-    def style_cell(ws, cell_ref, fill_color, size=11, bold=False, text_color='000000'):
+    def style_cell(ws, cell_ref, fill_color, size=10, bold=False, text_color='000000'):
         cell = ws[cell_ref]
         cell.font = Font(bold=bold, size=size, color=text_color)
         cell.fill = PatternFill(start_color=COLORS[fill_color], fill_type='solid')
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        
-        # Add thin border
-        from openpyxl.styles import Border, Side
-        border = Border(
-            left=Side(style='thin'), right=Side(style='thin'),
-            top=Side(style='thin'), bottom=Side(style='thin')
-        )
+        border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                       top=Side(style='thin'), bottom=Side(style='thin'))
         cell.border = border
         return cell
     
-    # === TEACHER TIMETABLE SHEET ===
-    ws_teacher = wb.create_sheet('👨‍🏫 Teacher Timetable', 0)
-    ws_teacher.column_dimensions['A'].width = 25
-    for col in range(2, 10):
-        ws_teacher.column_dimensions[get_column_letter(col)].width = 12
+    # === TEACHER SHEET: Normalized Class Names ===
+    ws_teacher = wb.create_sheet('👨‍🏫 Teacher Schedule', 0)
+    ws_teacher.column_dimensions['A'].width = 30
+    for col in range(2, 10): ws_teacher.column_dimensions[get_column_letter(col)].width = 13
     
     row = 1
-    # School header
     ws_teacher.merge_cells(f'A{row}:I{row}')
-    style_cell(ws_teacher, f'A{row}', 'school', 16, True, 'FFFFFF').value = f"🏫 {school_name}"
-    ws_teacher.row_dimensions[row].height = 40
-    row += 3
+    style_cell(ws_teacher, f'A{row}', 'school', 14, True, 'FFFFFF').value = f"👨‍🏫 TEACHER SCHEDULE - {school_name}"
+    ws_teacher.row_dimensions[row].height = 35
+    row += 2
     
-    # Sample teachers (first 5 for demo)
-    for teacher in teachers[:5]:
-        # Teacher header
+    for teacher in teachers:
         ws_teacher.merge_cells(f'A{row}:I{row}')
-        style_cell(ws_teacher, f'A{row}', 'teacher', 12, True).value = f"{teacher['name']}\n({teacher['subject']})"
-        ws_teacher.row_dimensions[row].height = 45
-        row += 2
-        
-        # Headers: Day/Period | P1 | P2 | ...
-        style_cell(ws_teacher, f'A{row}', 'period', 11, True, 'FFFFFF').value = 'Day/Period'
-        for p_idx, period in enumerate(PERIODS):
-            style_cell(ws_teacher, get_column_letter(p_idx+2)+f'{row}', 'period', 10, True, 'FFFFFF').value = f'P{period}'
+        style_cell(ws_teacher, f'A{row}', 'teacher', 11, True).value = f"{teacher['name']}\n📚 {teacher['subject']}"
+        ws_teacher.row_dimensions[row].height = 35
         row += 1
         
-        # Days data (sample 3 days)
-        for d_idx, day in enumerate(DAYS[:3]):
-            style_cell(ws_teacher, f'A{row}', 'day', 11, True, 'FFFFFF').value = day
+        style_cell(ws_teacher, f'A{row}', 'period', 10, True, 'FFFFFF').value = 'DAY'
+        for p_idx in range(8):
+            style_cell(ws_teacher, get_column_letter(p_idx+2)+f'{row}', 'period', 9, True, 'FFFFFF').value = f'P{PERIODS[p_idx]}'
+        row += 1
+        
+        # ALL 6 DAYS with NORMALIZED classes (VI A → VIA)
+        normalized_periods = teacher['periods_normalized']
+        for d_idx, day in enumerate(DAYS):
+            style_cell(ws_teacher, f'A{row}', 'day', 10, True, 'FFFFFF').value = day
             
-            periods = teacher['periods']
+            day_start = d_idx * 8
             for p_idx in range(8):
-                col_idx = d_idx * 8 + p_idx + 4  # Adjust for column offset
+                period_idx = day_start + p_idx
                 cell_ref = get_column_letter(p_idx+2) + f'{row}'
-                cell = style_cell(ws_teacher, cell_ref, 'data_cell')
+                cell = style_cell(ws_teacher, cell_ref, 'class_cell')
                 
-                if col_idx < len(periods) and pd.notna(periods[col_idx]):
-                    cell.value = periods[col_idx]
+                if period_idx < len(normalized_periods) and normalized_periods[period_idx]:
+                    cell.value = normalized_periods[period_idx]  # VIA (not VI A)
             
-            ws_teacher.row_dimensions[row].height = 25
+            ws_teacher.row_dimensions[row].height = 22
             row += 1
-        row += 2
+        row += 1
     
-    # === CLASS TIMETABLE SHEET ===
-    ws_class = wb.create_sheet('📚 Class Timetable', 1)
-    ws_class.column_dimensions['A'].width = 20
-    for col in range(2, 10):
-        ws_class.column_dimensions[get_column_letter(col)].width = 14
+    # === CLASS SHEET: SUBJECTS ===
+    ws_class = wb.create_sheet('📚 Class Schedule', 1)
+    ws_class.column_dimensions['A'].width = 25
+    for col in range(2, 10): ws_class.column_dimensions[get_column_letter(col)].width = 14
     
     row = 1
-    # School header
     ws_class.merge_cells(f'A{row}:I{row}')
-    style_cell(ws_class, f'A{row}', 'school', 16, True, 'FFFFFF').value = f"🏫 {school_name}"
-    ws_class.row_dimensions[row].height = 40
-    row += 3
+    style_cell(ws_class, f'A{row}', 'school', 14, True, 'FFFFFF').value = f"📚 CLASS SCHEDULE - {school_name}"
+    ws_class.row_dimensions[row].height = 35
+    row += 2
     
-    # Sample classes
-    for cls in classes[:5]:
-        # Class header
+    for cls in classes:  # Normalized classes (VIA, not VI A)
         ws_class.merge_cells(f'A{row}:I{row}')
-        style_cell(ws_class, f'A{row}', 'class_name', 13, True, 'FFFFFF').value = f"📖 Class {cls}"
-        ws_class.row_dimensions[row].height = 35
-        row += 2
-        
-        # Headers
-        style_cell(ws_class, f'A{row}', 'period', 11, True, 'FFFFFF').value = 'Day/Period'
-        for p_idx, period in enumerate(PERIODS):
-            style_cell(ws_class, get_column_letter(p_idx+2)+f'{row}', 'period', 10, True, 'FFFFFF').value = f'P{period}'
+        style_cell(ws_class, f'A{row}', 'header', 12, True, 'FFFFFF').value = f"Class {cls}"  # VIA
+        ws_class.row_dimensions[row].height = 32
         row += 1
         
-        # Sample days with subjects
-        for d_idx, day in enumerate(DAYS[:3]):
-            style_cell(ws_class, f'A{row}', 'day', 11, True, 'FFFFFF').value = day
+        style_cell(ws_class, f'A{row}', 'period', 10, True, 'FFFFFF').value = 'DAY'
+        for p_idx in range(8):
+            style_cell(ws_class, get_column_letter(p_idx+2)+f'{row}', 'period', 9, True, 'FFFFFF').value = f'P{PERIODS[p_idx]}'
+        row += 1
+        
+        for d_idx, day in enumerate(DAYS):
+            style_cell(ws_class, f'A{row}', 'day', 10, True, 'FFFFFF').value = day
             
+            day_start = d_idx * 8
             for p_idx in range(8):
                 cell_ref = get_column_letter(p_idx+2) + f'{row}'
-                cell = style_cell(ws_class, cell_ref, 'data_cell')
+                cell = style_cell(ws_class, cell_ref, 'subject_cell')
                 
-                # Find subjects for this class/period
+                period_idx = day_start + p_idx
                 subjects = []
                 for teacher in teachers:
-                    periods = teacher['periods']
-                    col_idx = d_idx * 8 + p_idx + 4
-                    if col_idx < len(periods) and str(periods[col_idx]).strip() == cls:
-                        subjects.append(teacher['subject'][:3])  # Shorten for display
+                    norm_periods = teacher['periods_normalized']
+                    if (period_idx < len(norm_periods) and 
+                        norm_periods[period_idx] == cls):
+                        subjects.append(teacher['subject'][:4])
                 
                 if subjects:
                     cell.value = '/'.join(subjects)
             
-            ws_class.row_dimensions[row].height = 25
+            ws_class.row_dimensions[row].height = 22
             row += 1
-        row += 2
+        row += 1
     
-    # Save to bytes
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
     return output.getvalue()
 
-# === STREAMLIT UI ===
+# === UI ===
 st.title("🎓 School Timetable Generator")
-st.markdown("**Upload your Excel → Get Professional Colorful Timetables** ✨")
+st.markdown("**VI A = VIA • IX B = IXB • ALL normalized!**")
 
-# Sidebar settings
-st.sidebar.header("⚙️ Settings")
-school_name = st.sidebar.text_input("🏫 School Name", "Jawahar Navodaya Vidyalaya Baksa")
+school_name = st.text_input("🏫 School Name", "Jawahar Navodaya Vidyalaya Baksa")
 
-# Main file uploader
-uploaded_file = st.file_uploader(
-    "📁 Upload Excel file", 
-    type=['xlsx'],
-    help="Upload your 'SCHOOL TIMETABLE' sheet (like final_school_timetable.xlsx)"
-)
+uploaded_file = st.file_uploader("📁 Upload Excel", type=['xlsx'])
 
-if uploaded_file is not None:
-    # Process file
-    with st.spinner("🔍 Analyzing your timetable..."):
+if uploaded_file:
+    with st.spinner("🔍 Normalizing classes (VI A → VIA)..."):
         teachers, classes = process_file(uploaded_file)
     
-    # Show metrics
     col1, col2, col3 = st.columns(3)
-    col1.metric("👨‍🏫 Teachers Found", len(teachers))
-    col2.metric("📚 Classes Found", len(classes))
-    col3.metric("🎨 Colors Used", "7 Distinct")
+    col1.metric("👨‍🏫 Teachers", len(teachers))
+    col2.metric("📚 Unique Classes", len(classes))
+    col3.metric("📅 Days", "6")
     
-    # Preview
     st.success(f"""
-    ✅ **Analysis Complete!**
-    - Teachers: {len(teachers)}
-    - Classes: {len(classes)} ({', '.join(classes[:6])}{'...' if len(classes)>6 else ''})
-    - Ready to generate beautiful timetable! ✨
+    ✅ **Classes normalized!** ({len(classes)} unique)
+    Sample: {', '.join(classes[:8])}{'...' if len(classes)>8 else ''}
+    • VI A → **VIA** ✓
+    • IX B → **IXB** ✓  
+    • XII A → **XIIA** ✓
     """)
     
-    # Generate button
-    if st.button("🚀 GENERATE PROFESSIONAL TIMETABLE", type="primary", use_container_width=True):
-        with st.spinner("🎨 Creating beautiful Excel file with 7 colors..."):
-            excel_data = create_professional_timetable(teachers, classes, school_name)
-        
+    if st.button("🚀 GENERATE", type="primary"):
+        excel_data = create_perfect_timetable(teachers, classes, school_name)
         st.balloons()
-        st.success("✨ **Timetable generated successfully!**")
-        
-        # Download button
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"Timetable_{school_name.replace(' ', '_')}_{timestamp}.xlsx"
-        
         st.download_button(
-            label="📥 DOWNLOAD COLORFUL TIMETABLE.xlsx",
+            label="📥 DOWNLOAD NORMALIZED TIMETABLE",
             data=excel_data,
-            file_name=filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
+            file_name=f"Timetable_{school_name.replace(' ', '_')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        
-        st.balloons()
 else:
-    st.info("👆 **Upload your Excel file** to generate beautiful timetables!")
-    
-    st.markdown("---")
-    st.markdown("""
-    ## ✨ **What You'll Get:**
-    - 🌈 **7 Beautiful Colors** (School/Class/Teacher/Day/Period/Data)
-    - 📊 **Periods in COLUMNS** | **Days in ROWS**
-    - 👨‍🏫 **Teacher Timetable** sheet
-    - 📚 **Class Timetable** (shows SUBJECTS like MATHS/ENG)
-    - 🎨 **Professional borders** & formatting
-    - ⚡ **Instant download**
-    """)
+    st.info("👆 Upload file!")
 
-st.markdown("---")
-st.markdown("*🆓 Free for all schools • Optimized for JNV format • Instant professional output*")
+st.markdown("""
+**✨ Normalization:** VI A=**VIA** • IX B=**IXB** • XII A=**XIIA**
+**📊 2 Sheets:** Teachers→Classes | Classes→Subjects
+**🎨 7 Colors:** Professional formatting
+""")
